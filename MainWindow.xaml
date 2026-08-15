@@ -3,82 +3,233 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Sound Fluent"
         Height="620" Width="470"
-        MinHeight="360" MinWidth="380"
-        WindowStyle="ToolWindow"
+        ResizeMode="NoResize"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
         WindowStartupLocation="CenterScreen"
         ShowInTaskbar="False"
-        Background="{StaticResource Paper}"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display">
 
-    <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
+    <Border Background="{StaticResource Paper}">
+        <Border.Clip>
+            <RectangleGeometry Rect="0,0,470,620" RadiusX="16" RadiusY="16"/>
+        </Border.Clip>
+        <Border.Effect>
+            <DropShadowEffect Color="Black" Opacity="0.4" BlurRadius="60" ShadowDepth="18" Direction="270"/>
+        </Border.Effect>
 
-        <!-- Transcript -->
-        <ScrollViewer x:Name="Transcript" Grid.Row="0"
-                      VerticalScrollBarVisibility="Auto"
-                      HorizontalScrollBarVisibility="Disabled"
-                      Padding="16,14,16,4">
-            <StackPanel x:Name="Messages"/>
-        </ScrollViewer>
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="46"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
 
-        <!-- Composer -->
-        <Border Grid.Row="1" Background="{StaticResource Paper}"
-                BorderBrush="{StaticResource PaperEdge}" BorderThickness="0,1,0,0"
-                Padding="16,12,16,12">
-            <Grid>
+            <!-- Header -->
+            <Grid Grid.Row="0" Background="Transparent" MouseLeftButtonDown="OnHeaderMouseDown">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="SoundFluent"
+                           Margin="16,0,0,0" VerticalAlignment="Center"
+                           FontFamily="Segoe UI" FontSize="14" FontWeight="SemiBold"
+                           Foreground="{StaticResource Accent}"/>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="0,0,8,0" VerticalAlignment="Center">
+                    <Button x:Name="SettingsButton" Style="{StaticResource IconButton}"
+                            ToolTip="Settings" Content="&#xE713;" Click="OnSettingsGearClick"/>
+                    <Button x:Name="CloseButton" Style="{StaticResource IconButton}"
+                            ToolTip="Hide" Content="&#xE8BB;" FontSize="10" Click="OnCloseClick"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Settings panel -->
+            <ScrollViewer x:Name="SettingsPanel" Grid.Row="1" Visibility="Collapsed"
+                          VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                          Padding="16,2,16,16">
+                <StackPanel>
+                    <TextBlock Text="SETTINGS" FontFamily="Segoe UI" FontSize="11"
+                               Foreground="{StaticResource InkMuted}"
+                               Margin="0,0,0,12"/>
+
+                    <!-- Model -->
+                    <Grid Margin="0,0,0,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                            <TextBlock Text="Model" FontFamily="Segoe UI" FontSize="12" FontWeight="SemiBold"
+                                       Foreground="{StaticResource Ink}"/>
+                            <TextBlock Text="Used for both checking and translating" FontFamily="Segoe UI"
+                                       FontSize="11" Foreground="{StaticResource InkMuted}"
+                                       TextWrapping="Wrap" Margin="0,1,0,0"/>
+                        </StackPanel>
+                        <ComboBox x:Name="ModelPicker" Grid.Column="1" Style="{StaticResource SettingsCombo}"
+                                  Width="140" IsEditable="True"
+                                  SelectionChanged="OnModelSelectionChanged" LostFocus="OnModelLostFocus">
+                            <ComboBoxItem Content="gpt-5"/>
+                            <ComboBoxItem Content="gpt-5-mini"/>
+                            <ComboBoxItem Content="gpt-4.1"/>
+                        </ComboBox>
+                    </Grid>
+                    <Border Height="1" Background="{StaticResource PaperEdge}" Opacity="0.5" Margin="0,0,0,14"/>
+
+                    <!-- Hotkey -->
+                    <Grid Margin="0,0,0,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                            <TextBlock Text="Hotkey" FontFamily="Segoe UI" FontSize="12" FontWeight="SemiBold"
+                                       Foreground="{StaticResource Ink}"/>
+                            <TextBlock Text="Opens the window with the clipboard" FontFamily="Segoe UI"
+                                       FontSize="11" Foreground="{StaticResource InkMuted}"
+                                       TextWrapping="Wrap" Margin="0,1,0,0"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                            <Border Style="{StaticResource KbdChip}">
+                                <TextBlock Text="Ctrl" FontFamily="Segoe UI" FontSize="11" Foreground="{StaticResource Ink}"/>
+                            </Border>
+                            <Border Style="{StaticResource KbdChip}">
+                                <TextBlock Text="Alt" FontFamily="Segoe UI" FontSize="11" Foreground="{StaticResource Ink}"/>
+                            </Border>
+                            <Border Style="{StaticResource KbdChip}" Margin="0">
+                                <TextBlock Text="P" FontFamily="Segoe UI" FontSize="11" Foreground="{StaticResource Ink}"/>
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+                    <Border Height="1" Background="{StaticResource PaperEdge}" Opacity="0.5" Margin="0,0,0,14"/>
+
+                    <!-- Copy the fix automatically -->
+                    <Grid Margin="0,0,0,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                            <TextBlock Text="Copy the fix automatically" FontFamily="Segoe UI" FontSize="12"
+                                       FontWeight="SemiBold" Foreground="{StaticResource Ink}"/>
+                            <TextBlock Text="The corrected text is on the clipboard the moment it lands"
+                                       FontFamily="Segoe UI" FontSize="11" Foreground="{StaticResource InkMuted}"
+                                       TextWrapping="Wrap" Margin="0,1,0,0"/>
+                        </StackPanel>
+                        <ToggleButton x:Name="AutoCopyToggle" Grid.Column="1" Style="{StaticResource SwitchToggle}"
+                                      VerticalAlignment="Center" Click="OnAutoCopyToggled"/>
+                    </Grid>
+
+                    <!-- Send on open -->
+                    <Grid Margin="0,0,0,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                            <TextBlock Text="Send on open" FontFamily="Segoe UI" FontSize="12"
+                                       FontWeight="SemiBold" Foreground="{StaticResource Ink}"/>
+                            <TextBlock Text="Off lets you edit the clipboard first" FontFamily="Segoe UI"
+                                       FontSize="11" Foreground="{StaticResource InkMuted}"
+                                       TextWrapping="Wrap" Margin="0,1,0,0"/>
+                        </StackPanel>
+                        <ToggleButton x:Name="AutoSendToggle" Grid.Column="1" Style="{StaticResource SwitchToggle}"
+                                      VerticalAlignment="Center" Click="OnAutoSendToggled"/>
+                    </Grid>
+
+                    <!-- Always on top -->
+                    <Grid Margin="0,0,0,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                            <TextBlock Text="Always on top" FontFamily="Segoe UI" FontSize="12"
+                                       FontWeight="SemiBold" Foreground="{StaticResource Ink}"/>
+                            <TextBlock Text="Stays above the window you were writing in" FontFamily="Segoe UI"
+                                       FontSize="11" Foreground="{StaticResource InkMuted}"
+                                       TextWrapping="Wrap" Margin="0,1,0,0"/>
+                        </StackPanel>
+                        <ToggleButton x:Name="OnTopToggle" Grid.Column="1" Style="{StaticResource SwitchToggle}"
+                                      VerticalAlignment="Center" Click="OnAlwaysOnTopToggled"/>
+                    </Grid>
+
+                    <Button Content="Done" Style="{StaticResource PrimaryButton}"
+                            HorizontalAlignment="Left" Click="OnSettingsDoneClick"/>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- Chat panel -->
+            <Grid x:Name="ChatPanel" Grid.Row="1">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-                    <ComboBox x:Name="ModePicker"
-                              Style="{StaticResource RegisterBox}"
-                              Width="140" SelectedIndex="0"
-                              SelectionChanged="OnModeChanged">
-                        <ComboBoxItem Content="Check my Polish"/>
-                        <ComboBoxItem Content="Translate to Polish"/>
-                    </ComboBox>
+                <ScrollViewer x:Name="Transcript" Grid.Row="0"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              Padding="16,2,16,4">
+                    <StackPanel x:Name="Messages"/>
+                </ScrollViewer>
 
-                    <ComboBox x:Name="RegisterPicker"
-                              Style="{StaticResource RegisterBox}"
-                              Width="140" SelectedIndex="0"
-                              Margin="8,0,0,0">
-                        <ComboBoxItem Content="Keep my register"/>
-                        <ComboBoxItem Content="Informal (ty)"/>
-                        <ComboBoxItem Content="Formal (pan/pani)"/>
-                    </ComboBox>
-                </StackPanel>
+                <Border Grid.Row="1" Padding="16,8,16,16">
+                    <StackPanel>
 
-                <TextBox x:Name="InputBox" Grid.Row="1"
-                         Style="{StaticResource InputStyle}"
-                         MinHeight="62" MaxHeight="150"
-                         PreviewKeyDown="OnInputKeyDown"/>
+                        <!-- Mode and register keep their original behavior, using the app's current styling. -->
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <ComboBox x:Name="ModePicker"
+                                      Style="{StaticResource SettingsCombo}"
+                                      Width="140" SelectedIndex="0"
+                                      SelectionChanged="OnModeChanged">
+                                <ComboBoxItem Content="Check my Polish"/>
+                                <ComboBoxItem Content="Translate to Polish"/>
+                            </ComboBox>
 
-                <Grid Grid.Row="2" Margin="0,9,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="RegisterPicker"
+                                      Style="{StaticResource SettingsCombo}"
+                                      Width="140" SelectedIndex="0"
+                                      Margin="8,0,0,0">
+                                <ComboBoxItem Content="Keep my register"/>
+                                <ComboBoxItem Content="Informal (ty)"/>
+                                <ComboBoxItem Content="Formal (pan/pani)"/>
+                            </ComboBox>
+                        </StackPanel>
 
-                    <TextBlock x:Name="StatusLine" Grid.Column="0"
-                               Margin="1,0,12,0"
-                               VerticalAlignment="Center"
-                               FontFamily="Segoe UI" FontSize="11"
-                               TextTrimming="CharacterEllipsis"
-                               Foreground="{StaticResource InkMuted}"/>
+                        <Grid>
+                            <TextBox x:Name="InputBox" Style="{StaticResource InputStyle}"
+                                     MinHeight="62" MaxHeight="150"
+                                     PreviewKeyDown="OnInputKeyDown" TextChanged="OnInputTextChanged"/>
+                            <TextBlock x:Name="InputPlaceholder" IsHitTestVisible="False"
+                                       Text="Paste or type — Enter sends, Shift+Enter is a newline"
+                                       FontFamily="Cambria" FontSize="15" TextWrapping="Wrap"
+                                       Foreground="{StaticResource InkMuted}"
+                                       Margin="13,11,13,0" VerticalAlignment="Top"/>
+                        </Grid>
 
-                    <Button x:Name="SendButton" Grid.Column="1"
-                            Style="{StaticResource PrimaryButton}"
-                            Content="Check  ⏎"
-                            Click="OnSendClick"/>
-                </Grid>
+                        <Grid Margin="0,9,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock x:Name="StatusLine" Grid.Column="0"
+                                       Margin="1,0,12,0"
+                                       VerticalAlignment="Center"
+                                       FontFamily="Segoe UI" FontSize="11"
+                                       TextTrimming="CharacterEllipsis"
+                                       Foreground="{StaticResource InkMuted}"/>
+
+                            <Button x:Name="SendButton" Grid.Column="1"
+                                    Style="{StaticResource PrimaryButton}"
+                                    Content="Check  &#x23CE;"
+                                    Click="OnSendClick"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
             </Grid>
-        </Border>
-    </Grid>
+        </Grid>
+    </Border>
 </Window>

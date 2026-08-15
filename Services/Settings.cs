@@ -18,6 +18,9 @@ public sealed class Settings
     /// <summary>Keep the window above other windows.</summary>
     public bool AlwaysOnTop { get; set; } = true;
 
+    /// <summary>Copy the reply to the clipboard the moment it lands.</summary>
+    public bool AutoCopy { get; set; } = true;
+
     /// <summary>Last used mode: 0 = check Polish, 1 = translate to Polish.</summary>
     public int DefaultMode { get; set; }
 

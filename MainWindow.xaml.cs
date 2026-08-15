@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -8,6 +9,8 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
+using System.Windows.Shapes;
 using System.Windows.Threading;
 using SoundFluent.Services;
 
@@ -30,6 +33,8 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _inFlight;
     private bool _busy;
     private bool _placeholderShowing;
+    private bool _settingsOpen;
+    private UIElement? _busyRow;
 
     public MainWindow(Settings settings)
     {
@@ -38,6 +43,12 @@ public partial class MainWindow : Window
         Topmost = _settings.AlwaysOnTop;
         ModePicker.SelectedIndex = Math.Clamp(_settings.DefaultMode, 0, 1);
         SendButton.Content = SendLabel;
+
+        ModelPicker.Text = _settings.Model;
+        AutoCopyToggle.IsChecked = _settings.AutoCopy;
+        AutoSendToggle.IsChecked = _settings.AutoSend;
+        OnTopToggle.IsChecked = _settings.AlwaysOnTop;
+
         ShowPlaceholder();
     }
 
@@ -69,6 +80,7 @@ public partial class MainWindow : Window
         _threadSource = text;
         Messages.Children.Clear();
         _placeholderShowing = false;
+        SetSettingsOpen(false);
 
         InputBox.Text = text;
         InputBox.CaretIndex = text.Length;
@@ -114,6 +126,65 @@ public partial class MainWindow : Window
         }
     }
 
+    // --------------------------------------------------------------- chrome
+
+    private void OnHeaderMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        try { DragMove(); } catch (InvalidOperationException) { /* button released mid-call */ }
+    }
+
+    private void OnSettingsGearClick(object sender, RoutedEventArgs e) => SetSettingsOpen(!_settingsOpen);
+
+    private void OnSettingsDoneClick(object sender, RoutedEventArgs e) => SetSettingsOpen(false);
+
+    private void SetSettingsOpen(bool open)
+    {
+        _settingsOpen = open;
+        SettingsPanel.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        ChatPanel.Visibility = open ? Visibility.Collapsed : Visibility.Visible;
+        if (!open) InputBox.Focus();
+    }
+
+    private void OnCloseClick(object sender, RoutedEventArgs e) => HideWindow();
+
+    // ------------------------------------------------------------- settings
+
+    private void OnModelSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ModelPicker.SelectedItem is ComboBoxItem item)
+            CommitModel(item.Content?.ToString());
+    }
+
+    private void OnModelLostFocus(object sender, RoutedEventArgs e) => CommitModel(ModelPicker.Text);
+
+    private void CommitModel(string? value)
+    {
+        string text = (value ?? "").Trim();
+        if (text.Length == 0 || text == _settings.Model) return;
+        _settings.Model = text;
+        _settings.Save();
+    }
+
+    private void OnAutoCopyToggled(object sender, RoutedEventArgs e)
+    {
+        _settings.AutoCopy = AutoCopyToggle.IsChecked == true;
+        _settings.Save();
+    }
+
+    private void OnAutoSendToggled(object sender, RoutedEventArgs e)
+    {
+        _settings.AutoSend = AutoSendToggle.IsChecked == true;
+        _settings.Save();
+    }
+
+    private void OnAlwaysOnTopToggled(object sender, RoutedEventArgs e)
+    {
+        _settings.AlwaysOnTop = OnTopToggle.IsChecked == true;
+        Topmost = _settings.AlwaysOnTop;
+        _settings.Save();
+    }
+
     // ----------------------------------------------------------------- input
 
     private void OnSendClick(object sender, RoutedEventArgs e) => _ = SendAsync();
@@ -144,6 +215,11 @@ public partial class MainWindow : Window
             }
             // Shift+Enter falls through to insert a newline.
         }
+    }
+
+    private void OnInputTextChanged(object sender, TextChangedEventArgs e)
+    {
+        InputPlaceholder.Visibility = InputBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void CopyLatestAndHide()
@@ -185,7 +261,8 @@ public partial class MainWindow : Window
 
         AddUserMessage(text);
         InputBox.Clear();
-        SetBusy(true, isFirstTurn ? "Checking…" : "Thinking…");
+        SetBusy(true, "");
+        ShowBusyIndicator(isFirstTurn ? "Checking your Polish…" : "Thinking…");
 
         _inFlight?.Cancel();
         _inFlight = new CancellationTokenSource();
@@ -206,9 +283,9 @@ public partial class MainWindow : Window
 
                     _history.Add(new ApiTurn("user", $"Translate into Polish:\n\n{text}"));
                     _history.Add(new ApiTurn("assistant", polish));
-                    _lastReply = polish;
+                    SetLastReply(polish);
 
-                    AddPlainReply(polish);
+                    AddPlainReply(polish, _settings.AutoCopy);
                 }
                 else
                 {
@@ -218,9 +295,9 @@ public partial class MainWindow : Window
 
                     _history.Add(new ApiTurn("user", $"Correct this Polish text:\n\n{text}"));
                     _history.Add(new ApiTurn("assistant", result.CorrectedText));
-                    _lastReply = result.CorrectedText;
+                    SetLastReply(result.CorrectedText);
 
-                    AddCorrection(text, result);
+                    AddCorrection(text, result, _settings.AutoCopy);
                 }
             }
             else
@@ -232,9 +309,9 @@ public partial class MainWindow : Window
                     .ConfigureAwait(true);
 
                 _history.Add(new ApiTurn("assistant", reply));
-                _lastReply = reply;
+                SetLastReply(reply);
 
-                AddPlainReply(reply);
+                AddPlainReply(reply, _settings.AutoCopy);
             }
         }
         catch (OperationCanceledException)
@@ -251,8 +328,18 @@ public partial class MainWindow : Window
         }
         finally
         {
-            SetBusy(false, _lastReply is null ? "" : "Ctrl+Enter copies the last reply and hides");
+            HideBusyIndicator();
+            string status = _lastReply is null
+                ? "Ctrl+Alt+P from anywhere"
+                : (_settings.AutoCopy ? "Copied to clipboard — Esc hides" : "Ctrl+Enter copies and hides");
+            SetBusy(false, status);
         }
+    }
+
+    private void SetLastReply(string text)
+    {
+        _lastReply = text;
+        if (_settings.AutoCopy) WriteClipboard(text);
     }
 
     private Mode CurrentMode => (Mode)Math.Max(0, ModePicker.SelectedIndex);
@@ -285,11 +372,9 @@ public partial class MainWindow : Window
     {
         var hint = new TextBlock
         {
-            Text = "Copy something, press Ctrl+Alt+P.\n\n"
-                 + "The clipboard lands here and goes straight out — checked if it's "
-                 + "Polish, translated if it isn't. After that just keep typing: "
-                 + "\"krócej\", \"bardziej formalnie\", \"why that ending?\". "
-                 + "The conversation is kept.",
+            Text = "Copy something, press Ctrl+Alt+P. The clipboard lands here and goes straight out — "
+                 + "checked if it's Polish, translated if it isn't. After that just keep typing: "
+                 + "\"krócej\", \"bardziej formalnie\", \"why that ending?\"",
             FontFamily = new FontFamily("Segoe UI"),
             FontSize = 12,
             LineHeight = 19,
@@ -301,17 +386,24 @@ public partial class MainWindow : Window
         _placeholderShowing = true;
     }
 
-    private Border Slip(Brush background, Brush border)
+    private Border Slip(Brush background, Brush? border = null)
     {
-        return new Border
+        var slip = new Border
         {
             Background = background,
-            BorderBrush = border,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
+            CornerRadius = new CornerRadius(12),
             Padding = new Thickness(12, 10, 12, 10),
-            Margin = new Thickness(0, 0, 0, 10)
+            Margin = new Thickness(0, 0, 0, 10),
+            Effect = new DropShadowEffect { Color = Colors.Black, Opacity = 0.08, BlurRadius = 6, ShadowDepth = 1, Direction = 270 }
         };
+
+        if (border is not null)
+        {
+            slip.BorderBrush = border;
+            slip.BorderThickness = new Thickness(1);
+        }
+
+        return slip;
     }
 
     private void Append(UIElement element)
@@ -326,9 +418,42 @@ public partial class MainWindow : Window
         Transcript.ScrollToEnd();
     }
 
+    private void ShowBusyIndicator(string label)
+    {
+        HideBusyIndicator();
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2, 4, 2, 8) };
+        row.Children.Add(new Ellipse
+        {
+            Width = 6,
+            Height = 6,
+            Fill = Res("Accent"),
+            Opacity = 0.55,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0)
+        });
+        row.Children.Add(new TextBlock
+        {
+            Text = label,
+            FontFamily = new FontFamily("Segoe UI"),
+            FontSize = 11,
+            Foreground = Res("InkMuted")
+        });
+
+        _busyRow = row;
+        Append(row);
+    }
+
+    private void HideBusyIndicator()
+    {
+        if (_busyRow is null) return;
+        Messages.Children.Remove(_busyRow);
+        _busyRow = null;
+    }
+
     private void AddUserMessage(string text)
     {
-        Border slip = Slip(Res("UserSlip"), Res("PaperEdge"));
+        Border slip = Slip(Res("UserSlip"));
         slip.Child = new TextBlock
         {
             Text = text,
@@ -341,13 +466,51 @@ public partial class MainWindow : Window
         Append(slip);
     }
 
-    private void AddCorrection(string original, Correction result)
+    /// <summary>Colors a reply's copy button for its "not yet copied" / "copied" state.</summary>
+    private void SetCopyState(Button button, bool copied)
     {
-        Border slip = Slip(Brushes.White, Res("PaperEdge"));
+        button.Content = copied ? "Copied ✓" : "Copy";
+        if (copied)
+        {
+            button.Background = Brushes.Transparent;
+            button.Foreground = Res("Accent");
+            button.BorderBrush = Res("PaperEdge");
+        }
+        else
+        {
+            button.Background = Res("Accent");
+            button.Foreground = Brushes.White;
+            button.BorderBrush = Res("Accent");
+        }
+    }
+
+    private Button MakeCopyButton(string textToCopy, bool alreadyCopied)
+    {
+        var button = new Button
+        {
+            Style = (Style)Application.Current.Resources["ReplyCopyButton"],
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(10, 0, 0, 0)
+        };
+        SetCopyState(button, alreadyCopied);
+        button.Click += (_, _) =>
+        {
+            WriteClipboard(textToCopy);
+            SetCopyState(button, true);
+        };
+        return button;
+    }
+
+    private void AddCorrection(string original, Correction result, bool autoCopied)
+    {
+        Border slip = Slip(Brushes.White);
         var stack = new StackPanel();
 
-        // 1. The corrected text — the thing you came for.
-        stack.Children.Add(new TextBlock
+        var headRow = new Grid();
+        headRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var correctedText = new TextBlock
         {
             Text = result.CorrectedText,
             FontFamily = new FontFamily("Cambria"),
@@ -355,29 +518,21 @@ public partial class MainWindow : Window
             LineHeight = 23,
             TextWrapping = TextWrapping.Wrap,
             Foreground = Res("Ink")
-        });
-
-        var copy = new Button
-        {
-            Content = "Copy",
-            Style = (Style)Application.Current.Resources["QuietButton"],
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 9, 0, 0)
         };
-        copy.Click += (_, _) =>
-        {
-            WriteClipboard(result.CorrectedText);
-            copy.Content = "Copied";
-        };
-        stack.Children.Add(copy);
+        Grid.SetColumn(correctedText, 0);
+        headRow.Children.Add(correctedText);
 
-        // 2. Proofreader's marks: struck in red, inserted in blue.
-        List<DiffPart> parts = WordDiff.Compute(original, result.CorrectedText);
-        bool anyChange = parts.Exists(p => p.Op != DiffOp.Same);
+        Button copyBtn = MakeCopyButton(result.CorrectedText, autoCopied);
+        Grid.SetColumn(copyBtn, 1);
+        headRow.Children.Add(copyBtn);
 
-        if (anyChange)
+        stack.Children.Add(headRow);
+
+        if (result.Errors.Count > 0)
         {
-            stack.Children.Add(Divider());
+            List<DiffPart> parts = WordDiff.Compute(original, result.CorrectedText);
+
+            var expandBody = new StackPanel { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 10, 0, 0) };
 
             var marks = new TextBlock
             {
@@ -386,7 +541,6 @@ public partial class MainWindow : Window
                 LineHeight = 21,
                 TextWrapping = TextWrapping.Wrap
             };
-
             foreach (DiffPart part in parts)
             {
                 var run = new Run(part.Word + " ");
@@ -406,24 +560,12 @@ public partial class MainWindow : Window
                 }
                 marks.Inlines.Add(run);
             }
-            stack.Children.Add(marks);
-        }
+            expandBody.Children.Add(marks);
 
-        // 3. What each change was about.
-        if (result.Errors.Count > 0)
-        {
-            stack.Children.Add(Divider());
-
+            var errorsPanel = new StackPanel { Margin = new Thickness(0, 11, 0, 0) };
             foreach (GrammarError error in result.Errors)
             {
-                var line = new TextBlock
-                {
-                    TextWrapping = TextWrapping.Wrap,
-                    Margin = new Thickness(0, 0, 0, 6),
-                    FontFamily = new FontFamily("Segoe UI"),
-                    FontSize = 12
-                };
-
+                var line = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 9) };
                 line.Inlines.Add(new Run(error.Original)
                 {
                     FontFamily = new FontFamily("Cambria"),
@@ -431,7 +573,7 @@ public partial class MainWindow : Window
                     Foreground = Res("MarkRed"),
                     TextDecorations = TextDecorations.Strikethrough
                 });
-                line.Inlines.Add(new Run("  →  ") { Foreground = Res("InkMuted") });
+                line.Inlines.Add(new Run("  →  ") { FontFamily = new FontFamily("Segoe UI"), Foreground = Res("InkMuted") });
                 line.Inlines.Add(new Run(error.Fixed)
                 {
                     FontFamily = new FontFamily("Cambria"),
@@ -442,14 +584,86 @@ public partial class MainWindow : Window
                 line.Inlines.Add(new LineBreak());
                 line.Inlines.Add(new Run(error.Rule)
                 {
+                    FontFamily = new FontFamily("Segoe UI"),
                     FontSize = 11,
                     Foreground = Res("InkMuted")
                 });
-
-                stack.Children.Add(line);
+                errorsPanel.Children.Add(line);
             }
+            expandBody.Children.Add(errorsPanel);
+
+            int fixCount = result.Errors.Count;
+            var badge = new Border
+            {
+                Width = 14,
+                Height = 14,
+                CornerRadius = new CornerRadius(4),
+                Background = Res("MarkRed"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new TextBlock
+                {
+                    Text = fixCount.ToString(),
+                    Foreground = Brushes.White,
+                    FontFamily = new FontFamily("Segoe UI"),
+                    FontSize = 9,
+                    FontWeight = FontWeights.Bold,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                }
+            };
+            var toggleLabel = new TextBlock
+            {
+                Text = fixCount == 1 ? "fix" : "fixes",
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Res("MarkBlue"),
+                Margin = new Thickness(6, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var toggleInner = new StackPanel { Orientation = Orientation.Horizontal };
+            toggleInner.Children.Add(badge);
+            toggleInner.Children.Add(toggleLabel);
+
+            var toggleBtn = new Button { Style = (Style)Application.Current.Resources["QuietFlatButton"], Content = toggleInner };
+
+            string hintText = string.Join(", ", result.Errors.Select(ShortRule).Distinct().Take(2));
+            var hint = new TextBlock
+            {
+                Text = hintText,
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 11,
+                Foreground = Res("InkMuted"),
+                Margin = new Thickness(8, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+
+            var toggleRowInner = new StackPanel { Orientation = Orientation.Horizontal };
+            toggleRowInner.Children.Add(toggleBtn);
+            toggleRowInner.Children.Add(hint);
+
+            var toggleRow = new Border
+            {
+                BorderBrush = Res("PaperEdge"),
+                BorderThickness = new Thickness(0, 1, 0, 0),
+                Margin = new Thickness(0, 11, 0, 0),
+                Padding = new Thickness(0, 10, 0, 0),
+                Child = toggleRowInner
+            };
+
+            toggleBtn.Click += (_, _) =>
+            {
+                bool willExpand = expandBody.Visibility != Visibility.Visible;
+                expandBody.Visibility = willExpand ? Visibility.Visible : Visibility.Collapsed;
+                toggleLabel.Text = willExpand ? "Hide the marks" : (fixCount == 1 ? "fix" : "fixes");
+                hint.Visibility = willExpand ? Visibility.Collapsed : Visibility.Visible;
+            };
+
+            stack.Children.Add(toggleRow);
+            stack.Children.Add(expandBody);
         }
-        else if (!anyChange)
+        else
         {
             stack.Children.Add(Divider());
             stack.Children.Add(new TextBlock
@@ -465,35 +679,39 @@ public partial class MainWindow : Window
         Append(slip);
     }
 
-    private void AddPlainReply(string text)
+    /// <summary>Trims a full explanation like "genitive after 'do', not nominative" down to its concept.</summary>
+    private static string ShortRule(GrammarError error)
     {
-        Border slip = Slip(Brushes.White, Res("PaperEdge"));
+        int comma = error.Rule.IndexOf(',');
+        return (comma > 0 ? error.Rule[..comma] : error.Rule).Trim();
+    }
+
+    private void AddPlainReply(string text, bool autoCopied)
+    {
+        Border slip = Slip(Brushes.White);
         var stack = new StackPanel();
 
-        stack.Children.Add(new TextBlock
+        var headRow = new Grid();
+        headRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var body = new TextBlock
         {
             Text = text,
             FontFamily = new FontFamily("Cambria"),
-            FontSize = 14,
-            LineHeight = 22,
+            FontSize = 15,
+            LineHeight = 23,
             TextWrapping = TextWrapping.Wrap,
             Foreground = Res("Ink")
-        });
-
-        var copy = new Button
-        {
-            Content = "Copy",
-            Style = (Style)Application.Current.Resources["QuietButton"],
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 9, 0, 0)
         };
-        copy.Click += (_, _) =>
-        {
-            WriteClipboard(text);
-            copy.Content = "Copied";
-        };
-        stack.Children.Add(copy);
+        Grid.SetColumn(body, 0);
+        headRow.Children.Add(body);
 
+        Button copyBtn = MakeCopyButton(text, autoCopied);
+        Grid.SetColumn(copyBtn, 1);
+        headRow.Children.Add(copyBtn);
+
+        stack.Children.Add(headRow);
         slip.Child = stack;
         Append(slip);
     }
@@ -516,6 +734,7 @@ public partial class MainWindow : Window
     {
         Height = 1,
         Background = Res("PaperEdge"),
+        Opacity = 0.6,
         Margin = new Thickness(0, 11, 0, 11)
     };
 }
