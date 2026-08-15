@@ -12,10 +12,6 @@ namespace SoundFluent.Services;
 
 public sealed record ApiTurn(string Role, string Text);
 
-public sealed record GrammarError(string Original, string Fixed, string Rule);
-
-public sealed record Correction(string CorrectedText, IReadOnlyList<GrammarError> Errors);
-
 public sealed class ApiException : Exception
 {
     public ApiException(string message) : base(message) { }
@@ -32,33 +28,22 @@ public sealed class OpenAiClient : IDisposable
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(90) };
 
-    /// <summary>First turn: returns the corrected text plus a list of what changed.</summary>
-    public async Task<Correction> CorrectAsync(
-        string apiKey, string model, string polishText, Register register, CancellationToken ct)
+    /// <summary>
+    /// First turn: detects the input language and returns only natural Polish text.
+    /// </summary>
+    public async Task<string> PolishAsync(
+        string apiKey, string model, string sourceText, CancellationToken ct)
     {
         var turns = new List<ApiTurn>
         {
-            new("system", Prompts.Correct(register)),
-            new("user", polishText)
+            new("system", Prompts.Polish),
+            new("user", sourceText)
         };
 
         string raw = await SendAsync(apiKey, model, turns, Prompts.ResponseFormat, ct)
             .ConfigureAwait(false);
 
-        return ParseCorrection(raw);
-    }
-
-    /// <summary>First turn, translate mode: plain Polish, nothing else.</summary>
-    public async Task<string> TranslateAsync(
-        string apiKey, string model, string sourceText, Register register, CancellationToken ct)
-    {
-        var turns = new List<ApiTurn>
-        {
-            new("system", Prompts.Translate(register)),
-            new("user", sourceText)
-        };
-
-        return await SendAsync(apiKey, model, turns, null, ct).ConfigureAwait(false);
+        return ParsePolishedText(raw);
     }
 
     /// <summary>Later turns: free-form reply, full history included for context.</summary>
@@ -138,7 +123,7 @@ public sealed class OpenAiClient : IDisposable
         return text;
     }
 
-    private static Correction ParseCorrection(string json)
+    private static string ParsePolishedText(string json)
     {
         // Strip stray fences in case the model wraps the JSON despite strict mode.
         string cleaned = json.Trim();
@@ -153,27 +138,13 @@ public sealed class OpenAiClient : IDisposable
         {
             JsonNode? root = JsonNode.Parse(cleaned);
             string corrected = root?["corrected"]?.GetValue<string>() ?? "";
-
-            var errors = new List<GrammarError>();
-            JsonArray? list = root?["errors"]?.AsArray();
-            if (list is not null)
-            {
-                foreach (JsonNode? e in list)
-                {
-                    errors.Add(new GrammarError(
-                        e?["original"]?.GetValue<string>() ?? "",
-                        e?["fixed"]?.GetValue<string>() ?? "",
-                        e?["rule"]?.GetValue<string>() ?? ""));
-                }
-            }
-
             if (corrected.Length == 0) throw new ApiException("The correction came back empty.");
-            return new Correction(corrected, errors);
+            return corrected;
         }
         catch (JsonException)
         {
             // Fall back to treating the whole reply as the corrected text.
-            return new Correction(cleaned, Array.Empty<GrammarError>());
+            return cleaned;
         }
     }
 

@@ -21,9 +21,6 @@ public sealed class Settings
     /// <summary>Copy the reply to the clipboard the moment it lands.</summary>
     public bool AutoCopy { get; set; } = true;
 
-    /// <summary>Last used mode: 0 = check Polish, 1 = translate to Polish.</summary>
-    public int DefaultMode { get; set; }
-
     /// <summary>DPAPI blob, base64. Readable only by this Windows user account.</summary>
     public string? ProtectedApiKey { get; set; }
 

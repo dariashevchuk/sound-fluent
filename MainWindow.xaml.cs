@@ -1,18 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Documents;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using SoundFluent.Services;
+using SoundFluent.Ui;
 
 namespace SoundFluent;
 
@@ -33,6 +33,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _inFlight;
     private bool _busy;
     private bool _placeholderShowing;
+    private bool _inputResizePending;
     private bool _settingsOpen;
     private UIElement? _busyRow;
 
@@ -41,8 +42,6 @@ public partial class MainWindow : Window
         _settings = settings;
         InitializeComponent();
         Topmost = _settings.AlwaysOnTop;
-        ModePicker.SelectedIndex = Math.Clamp(_settings.DefaultMode, 0, 1);
-        SendButton.Content = SendLabel;
 
         ModelPicker.Text = _settings.Model;
         AutoCopyToggle.IsChecked = _settings.AutoCopy;
@@ -148,6 +147,37 @@ public partial class MainWindow : Window
 
     private void OnCloseClick(object sender, RoutedEventArgs e) => HideWindow();
 
+    private void OnResizeDragDelta(object sender, DragDeltaEventArgs e)
+    {
+        if (sender is not Thumb { Tag: string edge } || WindowState != WindowState.Normal)
+            return;
+
+        double width = ActualWidth;
+        double height = ActualHeight;
+
+        if (edge.Contains("Left", StringComparison.Ordinal))
+        {
+            double newWidth = Math.Clamp(width - e.HorizontalChange, MinWidth, MaxWidth);
+            Left += width - newWidth;
+            Width = newWidth;
+        }
+        else if (edge.Contains("Right", StringComparison.Ordinal))
+        {
+            Width = Math.Clamp(width + e.HorizontalChange, MinWidth, MaxWidth);
+        }
+
+        if (edge.Contains("Top", StringComparison.Ordinal))
+        {
+            double newHeight = Math.Clamp(height - e.VerticalChange, MinHeight, MaxHeight);
+            Top += height - newHeight;
+            Height = newHeight;
+        }
+        else if (edge.Contains("Bottom", StringComparison.Ordinal))
+        {
+            Height = Math.Clamp(height + e.VerticalChange, MinHeight, MaxHeight);
+        }
+    }
+
     // ------------------------------------------------------------- settings
 
     private void OnModelSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -189,6 +219,41 @@ public partial class MainWindow : Window
 
     private void OnSendClick(object sender, RoutedEventArgs e) => _ = SendAsync();
 
+    private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key is not (Key.Up or Key.Down) || Keyboard.Modifiers != ModifierKeys.None)
+            return;
+
+        ScrollViewer target;
+
+        if (_settingsOpen)
+        {
+            // Keep arrows available for choosing a model in the editable combo.
+            if (ModelPicker.IsKeyboardFocusWithin)
+                return;
+
+            target = SettingsPanel;
+        }
+        else
+        {
+            if (InputBox.IsKeyboardFocusWithin)
+            {
+                int caretLine = InputBox.GetLineIndexFromCharacterIndex(InputBox.CaretIndex);
+                bool canMoveCaret = e.Key == Key.Up
+                    ? caretLine > 0
+                    : caretLine >= 0 && caretLine < InputBox.LineCount - 1;
+
+                if (canMoveCaret)
+                    return;
+            }
+
+            target = Transcript;
+        }
+
+        double distance = e.Key == Key.Down ? 32 : -32;
+        e.Handled = SmoothScroll.ScrollBy(target, distance);
+    }
+
     private void OnInputKeyDown(object sender, KeyEventArgs e)
     {
         bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
@@ -217,9 +282,29 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnInputTextChanged(object sender, TextChangedEventArgs e)
+    private void OnInputTextChanged(object sender, TextChangedEventArgs e) => ScheduleInputResize();
+
+    private void OnInputSizeChanged(object sender, SizeChangedEventArgs e)
     {
-        InputPlaceholder.Visibility = InputBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (e.WidthChanged)
+            ScheduleInputResize();
+    }
+
+    private void ScheduleInputResize()
+    {
+        if (_inputResizePending) return;
+        _inputResizePending = true;
+
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _inputResizePending = false;
+            InputBox.UpdateLayout();
+
+            const double lineHeight = 23;
+            const double paddingAndBorder = 15;
+            double contentHeight = paddingAndBorder + Math.Max(1, InputBox.LineCount) * lineHeight;
+            InputBox.Height = Math.Min(InputBox.MaxHeight, contentHeight);
+        }), DispatcherPriority.Background);
     }
 
     private void CopyLatestAndHide()
@@ -261,8 +346,8 @@ public partial class MainWindow : Window
 
         AddUserMessage(text);
         InputBox.Clear();
-        SetBusy(true, "");
-        ShowBusyIndicator(isFirstTurn ? "Checking your Polish…" : "Thinking…");
+        SetBusy(true);
+        ShowBusyIndicator(isFirstTurn ? "Writing in Polish…" : "Thinking…");
 
         _inFlight?.Cancel();
         _inFlight = new CancellationTokenSource();
@@ -272,33 +357,14 @@ public partial class MainWindow : Window
         {
             if (isFirstTurn)
             {
-                Register register = (Register)Math.Max(0, RegisterPicker.SelectedIndex);
-                Mode mode = CurrentMode;
+                string result = await _client
+                    .PolishAsync(_settings.ApiKey!, _settings.Model, text, token)
+                    .ConfigureAwait(true);
 
-                if (mode == Mode.Translate)
-                {
-                    string polish = await _client
-                        .TranslateAsync(_settings.ApiKey!, _settings.Model, text, register, token)
-                        .ConfigureAwait(true);
-
-                    _history.Add(new ApiTurn("user", $"Translate into Polish:\n\n{text}"));
-                    _history.Add(new ApiTurn("assistant", polish));
-                    SetLastReply(polish);
-
-                    AddPlainReply(polish, _settings.AutoCopy);
-                }
-                else
-                {
-                    Correction result = await _client
-                        .CorrectAsync(_settings.ApiKey!, _settings.Model, text, register, token)
-                        .ConfigureAwait(true);
-
-                    _history.Add(new ApiTurn("user", $"Correct this Polish text:\n\n{text}"));
-                    _history.Add(new ApiTurn("assistant", result.CorrectedText));
-                    SetLastReply(result.CorrectedText);
-
-                    AddCorrection(text, result, _settings.AutoCopy);
-                }
+                _history.Add(new ApiTurn("user", text));
+                _history.Add(new ApiTurn("assistant", result));
+                SetLastReply(result);
+                AddPlainReply(result, _settings.AutoCopy);
             }
             else
             {
@@ -329,10 +395,7 @@ public partial class MainWindow : Window
         finally
         {
             HideBusyIndicator();
-            string status = _lastReply is null
-                ? "Ctrl+Alt+P from anywhere"
-                : (_settings.AutoCopy ? "Copied to clipboard — Esc hides" : "Ctrl+Enter copies and hides");
-            SetBusy(false, status);
+            SetBusy(false);
         }
     }
 
@@ -342,26 +405,10 @@ public partial class MainWindow : Window
         if (_settings.AutoCopy) WriteClipboard(text);
     }
 
-    private Mode CurrentMode => (Mode)Math.Max(0, ModePicker.SelectedIndex);
-
-    private string SendLabel => CurrentMode == Mode.Translate ? "Translate  ⏎" : "Check  ⏎";
-
-    private void OnModeChanged(object sender, SelectionChangedEventArgs e)
-    {
-        // Fires once during InitializeComponent, before the rest of the tree exists.
-        if (SendButton is null) return;
-
-        SendButton.Content = SendLabel;
-        _settings.DefaultMode = (int)CurrentMode;
-        _settings.Save();
-    }
-
-    private void SetBusy(bool busy, string status)
+    private void SetBusy(bool busy)
     {
         _busy = busy;
         SendButton.IsEnabled = !busy;
-        SendButton.Content = busy ? "…" : SendLabel;
-        StatusLine.Text = status;
     }
 
     // ------------------------------------------------------------- rendering
@@ -458,29 +505,31 @@ public partial class MainWindow : Window
         {
             Text = text,
             FontFamily = new FontFamily("Cambria"),
-            FontSize = 14,
-            LineHeight = 21,
+            FontSize = 15,
+            LineHeight = 23,
             TextWrapping = TextWrapping.Wrap,
             Foreground = Res("Ink")
         };
         Append(slip);
     }
 
-    /// <summary>Colors a reply's copy button for its "not yet copied" / "copied" state.</summary>
+    /// <summary>Styles a reply's copy control for its "not yet copied" / "copied" state.</summary>
     private void SetCopyState(Button button, bool copied)
     {
         button.Content = copied ? "Copied ✓" : "Copy";
         if (copied)
         {
             button.Background = Brushes.Transparent;
-            button.Foreground = Res("Accent");
-            button.BorderBrush = Res("PaperEdge");
+            button.Foreground = Res("InkMuted");
+            button.BorderBrush = Brushes.Transparent;
+            button.BorderThickness = new Thickness(0);
         }
         else
         {
             button.Background = Res("Accent");
             button.Foreground = Brushes.White;
             button.BorderBrush = Res("Accent");
+            button.BorderThickness = new Thickness(1);
         }
     }
 
@@ -489,8 +538,8 @@ public partial class MainWindow : Window
         var button = new Button
         {
             Style = (Style)Application.Current.Resources["ReplyCopyButton"],
-            VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(10, 0, 0, 0)
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 4, 0, 0)
         };
         SetCopyState(button, alreadyCopied);
         button.Click += (_, _) =>
@@ -501,199 +550,10 @@ public partial class MainWindow : Window
         return button;
     }
 
-    private void AddCorrection(string original, Correction result, bool autoCopied)
-    {
-        Border slip = Slip(Brushes.White);
-        var stack = new StackPanel();
-
-        var headRow = new Grid();
-        headRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        headRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-        var correctedText = new TextBlock
-        {
-            Text = result.CorrectedText,
-            FontFamily = new FontFamily("Cambria"),
-            FontSize = 15,
-            LineHeight = 23,
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = Res("Ink")
-        };
-        Grid.SetColumn(correctedText, 0);
-        headRow.Children.Add(correctedText);
-
-        Button copyBtn = MakeCopyButton(result.CorrectedText, autoCopied);
-        Grid.SetColumn(copyBtn, 1);
-        headRow.Children.Add(copyBtn);
-
-        stack.Children.Add(headRow);
-
-        if (result.Errors.Count > 0)
-        {
-            List<DiffPart> parts = WordDiff.Compute(original, result.CorrectedText);
-
-            var expandBody = new StackPanel { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 10, 0, 0) };
-
-            var marks = new TextBlock
-            {
-                FontFamily = new FontFamily("Cambria"),
-                FontSize = 13,
-                LineHeight = 21,
-                TextWrapping = TextWrapping.Wrap
-            };
-            foreach (DiffPart part in parts)
-            {
-                var run = new Run(part.Word + " ");
-                switch (part.Op)
-                {
-                    case DiffOp.Removed:
-                        run.Foreground = Res("MarkRed");
-                        run.TextDecorations = TextDecorations.Strikethrough;
-                        break;
-                    case DiffOp.Added:
-                        run.Foreground = Res("MarkBlue");
-                        run.FontWeight = FontWeights.Bold;
-                        break;
-                    default:
-                        run.Foreground = Res("InkMuted");
-                        break;
-                }
-                marks.Inlines.Add(run);
-            }
-            expandBody.Children.Add(marks);
-
-            var errorsPanel = new StackPanel { Margin = new Thickness(0, 11, 0, 0) };
-            foreach (GrammarError error in result.Errors)
-            {
-                var line = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 9) };
-                line.Inlines.Add(new Run(error.Original)
-                {
-                    FontFamily = new FontFamily("Cambria"),
-                    FontSize = 13,
-                    Foreground = Res("MarkRed"),
-                    TextDecorations = TextDecorations.Strikethrough
-                });
-                line.Inlines.Add(new Run("  →  ") { FontFamily = new FontFamily("Segoe UI"), Foreground = Res("InkMuted") });
-                line.Inlines.Add(new Run(error.Fixed)
-                {
-                    FontFamily = new FontFamily("Cambria"),
-                    FontSize = 13,
-                    FontWeight = FontWeights.Bold,
-                    Foreground = Res("MarkBlue")
-                });
-                line.Inlines.Add(new LineBreak());
-                line.Inlines.Add(new Run(error.Rule)
-                {
-                    FontFamily = new FontFamily("Segoe UI"),
-                    FontSize = 11,
-                    Foreground = Res("InkMuted")
-                });
-                errorsPanel.Children.Add(line);
-            }
-            expandBody.Children.Add(errorsPanel);
-
-            int fixCount = result.Errors.Count;
-            var badge = new Border
-            {
-                Width = 14,
-                Height = 14,
-                CornerRadius = new CornerRadius(4),
-                Background = Res("MarkRed"),
-                VerticalAlignment = VerticalAlignment.Center,
-                Child = new TextBlock
-                {
-                    Text = fixCount.ToString(),
-                    Foreground = Brushes.White,
-                    FontFamily = new FontFamily("Segoe UI"),
-                    FontSize = 9,
-                    FontWeight = FontWeights.Bold,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center
-                }
-            };
-            var toggleLabel = new TextBlock
-            {
-                Text = fixCount == 1 ? "fix" : "fixes",
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 11,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = Res("MarkBlue"),
-                Margin = new Thickness(6, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            var toggleInner = new StackPanel { Orientation = Orientation.Horizontal };
-            toggleInner.Children.Add(badge);
-            toggleInner.Children.Add(toggleLabel);
-
-            var toggleBtn = new Button { Style = (Style)Application.Current.Resources["QuietFlatButton"], Content = toggleInner };
-
-            string hintText = string.Join(", ", result.Errors.Select(ShortRule).Distinct().Take(2));
-            var hint = new TextBlock
-            {
-                Text = hintText,
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 11,
-                Foreground = Res("InkMuted"),
-                Margin = new Thickness(8, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center,
-                TextTrimming = TextTrimming.CharacterEllipsis
-            };
-
-            var toggleRowInner = new StackPanel { Orientation = Orientation.Horizontal };
-            toggleRowInner.Children.Add(toggleBtn);
-            toggleRowInner.Children.Add(hint);
-
-            var toggleRow = new Border
-            {
-                BorderBrush = Res("PaperEdge"),
-                BorderThickness = new Thickness(0, 1, 0, 0),
-                Margin = new Thickness(0, 11, 0, 0),
-                Padding = new Thickness(0, 10, 0, 0),
-                Child = toggleRowInner
-            };
-
-            toggleBtn.Click += (_, _) =>
-            {
-                bool willExpand = expandBody.Visibility != Visibility.Visible;
-                expandBody.Visibility = willExpand ? Visibility.Visible : Visibility.Collapsed;
-                toggleLabel.Text = willExpand ? "Hide the marks" : (fixCount == 1 ? "fix" : "fixes");
-                hint.Visibility = willExpand ? Visibility.Collapsed : Visibility.Visible;
-            };
-
-            stack.Children.Add(toggleRow);
-            stack.Children.Add(expandBody);
-        }
-        else
-        {
-            stack.Children.Add(Divider());
-            stack.Children.Add(new TextBlock
-            {
-                Text = "No errors found.",
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 11,
-                Foreground = Res("InkMuted")
-            });
-        }
-
-        slip.Child = stack;
-        Append(slip);
-    }
-
-    /// <summary>Trims a full explanation like "genitive after 'do', not nominative" down to its concept.</summary>
-    private static string ShortRule(GrammarError error)
-    {
-        int comma = error.Rule.IndexOf(',');
-        return (comma > 0 ? error.Rule[..comma] : error.Rule).Trim();
-    }
-
     private void AddPlainReply(string text, bool autoCopied)
     {
         Border slip = Slip(Brushes.White);
-        var stack = new StackPanel();
-
-        var headRow = new Grid();
-        headRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        headRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        slip.Margin = new Thickness(0);
 
         var body = new TextBlock
         {
@@ -704,16 +564,12 @@ public partial class MainWindow : Window
             TextWrapping = TextWrapping.Wrap,
             Foreground = Res("Ink")
         };
-        Grid.SetColumn(body, 0);
-        headRow.Children.Add(body);
+        slip.Child = body;
 
-        Button copyBtn = MakeCopyButton(text, autoCopied);
-        Grid.SetColumn(copyBtn, 1);
-        headRow.Children.Add(copyBtn);
-
-        stack.Children.Add(headRow);
-        slip.Child = stack;
-        Append(slip);
+        var reply = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+        reply.Children.Add(slip);
+        reply.Children.Add(MakeCopyButton(text, autoCopied));
+        Append(reply);
     }
 
     private void AddNotice(string message)
