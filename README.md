@@ -23,6 +23,18 @@ dotnet run
 
 The main window is hidden at startup; look for SoundFluent in the system tray. If `OPENAI_API_KEY` is not set and no key has been saved, the app prompts for one on first launch.
 
+## Start automatically when you sign in
+
+Run this once from the repository folder in PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-Startup.ps1
+```
+
+This publishes a release executable to `artifacts\startup` and adds a SoundFluent shortcut to your Windows Startup folder. On your next sign-in, SoundFluent starts silently in the tray; press `Ctrl+Alt+P` to open it. Your current API key and settings are still read from `%APPDATA%\SoundFluent\settings.json`. Run the script again after changing the source code to update the executable used at sign-in.
+
+To stop automatic startup, remove **SoundFluent** from Windows **Settings → Apps → Startup**, or delete `SoundFluent.lnk` from the folder opened by `Win+R` → `shell:startup`.
+
 You can also right-click the tray icon at any time to open the app, replace the saved API key, or quit.
 
 ## How to use it
